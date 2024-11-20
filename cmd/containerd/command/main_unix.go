@@ -23,8 +23,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/containerd/containerd/v2/cmd/containerd/server"
-	"github.com/containerd/log"
+	"github.com/containerd/containerd/log"
+	"github.com/containerd/containerd/services/server"
 	"golang.org/x/sys/unix"
 )
 

@@ -20,7 +20,8 @@ package integration
 
 import (
 	"fmt"
-	"os/exec"
+
+	exec "golang.org/x/sys/execabs"
 )
 
 func getOwnership(path string) (string, error) {

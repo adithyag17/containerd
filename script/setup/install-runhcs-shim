@@ -14,9 +14,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-scripts_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-: ${RUNHCS_VERSION:="$(cat $scripts_path/runhcs-version)"}
+: ${RUNHCS_VERSION:="$(grep 'Microsoft/hcsshim ' go.mod | awk '{print $2}')"}
 : ${RUNHCS_REPO:="https://github.com/Microsoft/hcsshim.git"}
 : ${HCSSHIM_SRC:=''}
 : ${DESTDIR:=''}

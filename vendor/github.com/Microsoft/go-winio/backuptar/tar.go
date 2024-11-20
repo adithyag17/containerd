@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Microsoft/go-winio"
@@ -105,7 +106,7 @@ func BasicInfoHeader(name string, size int64, fileInfo *winio.FileBasicInfo) *ta
 	hdr.PAXRecords[hdrFileAttributes] = fmt.Sprintf("%d", fileInfo.FileAttributes)
 	hdr.PAXRecords[hdrCreationTime] = formatPAXTime(time.Unix(0, fileInfo.CreationTime.Nanoseconds()))
 
-	if (fileInfo.FileAttributes & windows.FILE_ATTRIBUTE_DIRECTORY) != 0 {
+	if (fileInfo.FileAttributes & syscall.FILE_ATTRIBUTE_DIRECTORY) != 0 {
 		hdr.Mode |= cISDIR
 		hdr.Size = 0
 		hdr.Typeflag = tar.TypeDir
@@ -377,7 +378,7 @@ func WriteTarFileFromBackupStream(t *tar.Writer, r io.Reader, name string, size 
 // WriteTarFileFromBackupStream.
 func FileInfoFromHeader(hdr *tar.Header) (name string, size int64, fileInfo *winio.FileBasicInfo, err error) {
 	name = hdr.Name
-	if hdr.Typeflag == tar.TypeReg {
+	if hdr.Typeflag == tar.TypeReg || hdr.Typeflag == tar.TypeRegA {
 		size = hdr.Size
 	}
 	fileInfo = &winio.FileBasicInfo{
@@ -395,7 +396,7 @@ func FileInfoFromHeader(hdr *tar.Header) (name string, size int64, fileInfo *win
 		fileInfo.FileAttributes = uint32(attr)
 	} else {
 		if hdr.Typeflag == tar.TypeDir {
-			fileInfo.FileAttributes |= windows.FILE_ATTRIBUTE_DIRECTORY
+			fileInfo.FileAttributes |= syscall.FILE_ATTRIBUTE_DIRECTORY
 		}
 	}
 	if creationTimeStr, ok := hdr.PAXRecords[hdrCreationTime]; ok {
@@ -468,7 +469,7 @@ func WriteBackupStreamFromTarFile(w io.Writer, t *tar.Reader, hdr *tar.Header) (
 		}
 	}
 
-	if hdr.Typeflag == tar.TypeReg {
+	if hdr.Typeflag == tar.TypeReg || hdr.Typeflag == tar.TypeRegA {
 		bhdr := winio.BackupHeader{
 			Id:   winio.BackupData,
 			Size: hdr.Size,

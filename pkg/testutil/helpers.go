@@ -24,26 +24,14 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/containerd/containerd/v2/core/mount"
+	"github.com/containerd/containerd/mount"
 	"github.com/stretchr/testify/assert"
 )
-
-const umountflags int = 0
 
 var rootEnabled bool
 
 func init() {
-	if flag.Lookup("test.root") == nil {
-		flag.BoolVar(&rootEnabled, "test.root", false, "enable tests that require root")
-	} else {
-		// The flag is already registered by continuity/testutil
-		for _, f := range os.Args {
-			if f == "-test.root" || f == "-test.root=true" {
-				rootEnabled = true
-				break
-			}
-		}
-	}
+	flag.BoolVar(&rootEnabled, "test.root", false, "enable tests that require root")
 }
 
 // DumpDir prints the contents of the directory to the testing logger.

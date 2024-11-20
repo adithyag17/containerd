@@ -82,14 +82,14 @@ func ParseEventMask(events ...string) (EventMask, error) {
 				continue
 			case "pod", "podsandbox":
 				for name, bit := range bits {
-					if strings.Contains(name, "pod") {
+					if strings.Contains(name, "Pod") {
 						mask.Set(bit)
 					}
 				}
 				continue
 			case "container":
 				for name, bit := range bits {
-					if strings.Contains(name, "container") {
+					if strings.Contains(name, "Container") {
 						mask.Set(bit)
 					}
 				}

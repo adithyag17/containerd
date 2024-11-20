@@ -18,12 +18,19 @@ package fs
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
-	"github.com/containerd/log"
+	"github.com/sirupsen/logrus"
 )
+
+var bufferPool = &sync.Pool{
+	New: func() interface{} {
+		buffer := make([]byte, 32*1024)
+		return &buffer
+	},
+}
 
 // XAttrErrorHandler transform a non-nil xattr error.
 // Return nil to ignore an error.
@@ -103,6 +110,11 @@ func copyDirectory(dst, src string, inodes map[uint64]string, o *copyDirOpts) er
 		}
 	}
 
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return fmt.Errorf("failed to read %s: %w", src, err)
+	}
+
 	if err := copyFileInfo(stat, src, dst); err != nil {
 		return fmt.Errorf("failed to copy file info for %s: %w", dst, err)
 	}
@@ -111,15 +123,7 @@ func copyDirectory(dst, src string, inodes map[uint64]string, o *copyDirOpts) er
 		return fmt.Errorf("failed to copy xattrs: %w", err)
 	}
 
-	f, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	dr := &dirReader{f: f}
-
-	handleEntry := func(entry os.DirEntry) error {
+	for _, entry := range entries {
 		source := filepath.Join(src, entry.Name())
 		target := filepath.Join(dst, entry.Name())
 
@@ -133,7 +137,7 @@ func copyDirectory(dst, src string, inodes map[uint64]string, o *copyDirOpts) er
 			if err := copyDirectory(target, source, inodes, o); err != nil {
 				return err
 			}
-			return nil
+			continue
 		case (fileInfo.Mode() & os.ModeType) == 0:
 			link, err := getLinkSource(target, fileInfo, inodes)
 			if err != nil {
@@ -161,8 +165,8 @@ func copyDirectory(dst, src string, inodes map[uint64]string, o *copyDirOpts) er
 				return fmt.Errorf("failed to create irregular file: %w", err)
 			}
 		default:
-			log.L.Warnf("unsupported mode: %s: %s", source, fileInfo.Mode())
-			return nil
+			logrus.Warnf("unsupported mode: %s: %s", source, fileInfo.Mode())
+			continue
 		}
 
 		if err := copyFileInfo(fileInfo, source, target); err != nil {
@@ -172,20 +176,9 @@ func copyDirectory(dst, src string, inodes map[uint64]string, o *copyDirOpts) er
 		if err := copyXAttrs(target, source, o.xex, o.xeh); err != nil {
 			return fmt.Errorf("failed to copy xattrs: %w", err)
 		}
-		return nil
 	}
 
-	for {
-		entry := dr.Next()
-		if entry == nil {
-			break
-		}
-
-		if err := handleEntry(entry); err != nil {
-			return err
-		}
-	}
-	return dr.Err()
+	return nil
 }
 
 // CopyFile copies the source file to the target.
@@ -206,6 +199,5 @@ func openAndCopyFile(target, source string) error {
 	}
 	defer tgt.Close()
 
-	_, err = io.Copy(tgt, src)
-	return err
+	return copyFileContent(tgt, src)
 }

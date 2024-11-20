@@ -29,7 +29,7 @@ func RunTests(matchString func(pat, str string) (bool, error), tests []testing.I
 }
 
 func Short() bool {
-	return false
+	panic(unsupportedApi("testing.Short"))
 }
 
 func Verbose() bool {

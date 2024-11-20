@@ -6,8 +6,7 @@ package etw
 import (
 	"bytes"
 	"encoding/binary"
-
-	"golang.org/x/sys/windows"
+	"syscall"
 )
 
 // eventData maintains a buffer which builds up the data for an ETW event. It
@@ -70,6 +69,6 @@ func (ed *eventData) writeUint64(value uint64) {
 }
 
 // writeFiletime appends a FILETIME to the buffer.
-func (ed *eventData) writeFiletime(value windows.Filetime) {
+func (ed *eventData) writeFiletime(value syscall.Filetime) {
 	_ = binary.Write(&ed.buffer, binary.LittleEndian, value)
 }

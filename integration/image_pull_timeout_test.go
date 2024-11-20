@@ -33,19 +33,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/containerd/log"
-	"github.com/containerd/log/logtest"
+	"github.com/containerd/containerd"
+	"github.com/containerd/containerd/content"
+	"github.com/containerd/containerd/leases"
+	"github.com/containerd/containerd/log"
+	"github.com/containerd/containerd/log/logtest"
+	"github.com/containerd/containerd/namespaces"
+	criconfig "github.com/containerd/containerd/pkg/cri/config"
+	criserver "github.com/containerd/containerd/pkg/cri/server"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/assert"
-
-	containerd "github.com/containerd/containerd/v2/client"
-	"github.com/containerd/containerd/v2/core/content"
-	"github.com/containerd/containerd/v2/core/leases"
-	"github.com/containerd/containerd/v2/defaults"
-	criconfig "github.com/containerd/containerd/v2/internal/cri/config"
-	criserver "github.com/containerd/containerd/v2/internal/cri/server"
-	"github.com/containerd/containerd/v2/internal/cri/server/images"
-	"github.com/containerd/containerd/v2/pkg/namespaces"
+	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
 var (
@@ -63,37 +61,6 @@ func TestCRIImagePullTimeout(t *testing.T) {
 
 	t.Run("HoldingContentOpenWriter", testCRIImagePullTimeoutByHoldingContentOpenWriter)
 	t.Run("NoDataTransferred", testCRIImagePullTimeoutByNoDataTransferred)
-	t.Run("SlowCommitWriter", testCRIImagePullTimeoutBySlowCommitWriter)
-}
-
-// testCRIImagePullTimeoutBySlowCommitWriter tests that
-//
-//	It should not cancel if the content.Commit takes long time.
-//
-// After copying all the data from registry, the request should be inactive
-// before content.Commit. If the blob is large, for instance, 2 GiB, the fsync
-// during content.Commit maybe take long time during IO pressure. The
-// content.Commit holds the bolt's writable mutex and blocks other goroutines
-// which are going to commit blob as well. If the progress tracker still
-// considers these requests active, it maybe file false alert and cancel the
-// ImagePull.
-//
-// It's reproducer for #9347.
-func testCRIImagePullTimeoutBySlowCommitWriter(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-
-	delayDuration := 2 * defaultImagePullProgressTimeout
-	cli := buildLocalContainerdClient(t, tmpDir, tweakContentInitFnWithDelayer(delayDuration))
-
-	criService, err := initLocalCRIImageService(cli, tmpDir, criconfig.Registry{})
-	assert.NoError(t, err)
-
-	ctx := namespaces.WithNamespace(logtest.WithT(context.Background(), t), k8sNamespace)
-
-	_, err = criService.PullImage(ctx, pullProgressTestImageName, nil, nil, "")
-	assert.NoError(t, err)
 }
 
 // testCRIImagePullTimeoutByHoldingContentOpenWriter tests that
@@ -108,9 +75,9 @@ func testCRIImagePullTimeoutByHoldingContentOpenWriter(t *testing.T) {
 
 	tmpDir := t.TempDir()
 
-	cli := buildLocalContainerdClient(t, tmpDir, nil)
+	cli := buildLocalContainerdClient(t, tmpDir)
 
-	criService, err := initLocalCRIImageService(cli, tmpDir, criconfig.Registry{})
+	criService, err := initLocalCRIPlugin(cli, tmpDir, criconfig.Registry{})
 	assert.NoError(t, err)
 
 	ctx := namespaces.WithNamespace(logtest.WithT(context.Background(), t), k8sNamespace)
@@ -211,7 +178,11 @@ func testCRIImagePullTimeoutByHoldingContentOpenWriter(t *testing.T) {
 	go func() {
 		defer close(errCh)
 
-		_, err := criService.PullImage(ctx, pullProgressTestImageName, nil, nil, "")
+		_, err := criService.PullImage(ctx, &runtimeapi.PullImageRequest{
+			Image: &runtimeapi.ImageSpec{
+				Image: pullProgressTestImageName,
+			},
+		})
 		errCh <- err
 	}()
 
@@ -242,7 +213,7 @@ func testCRIImagePullTimeoutByNoDataTransferred(t *testing.T) {
 
 	tmpDir := t.TempDir()
 
-	cli := buildLocalContainerdClient(t, tmpDir, nil)
+	cli := buildLocalContainerdClient(t, tmpDir)
 
 	mirrorSrv := newMirrorRegistryServer(mirrorRegistryServerConfig{
 		limitedBytesPerConn: 1024 * 1024 * 3, // 3MB
@@ -286,22 +257,33 @@ func testCRIImagePullTimeoutByNoDataTransferred(t *testing.T) {
 					Endpoints: []string{mirrorURL.String()},
 				},
 			},
+			Configs: map[string]criconfig.RegistryConfig{
+				mirrorURL.Host: {
+					TLS: &criconfig.TLSConfig{
+						InsecureSkipVerify: true,
+					},
+				},
+			},
 		},
 	} {
-		criService, err := initLocalCRIImageService(cli, tmpDir, registryCfg)
+		criService, err := initLocalCRIPlugin(cli, tmpDir, registryCfg)
 		assert.NoError(t, err)
 
 		dctx, _, err := cli.WithLease(ctx)
 		assert.NoError(t, err)
 
-		_, err = criService.PullImage(dctx, fmt.Sprintf("%s/%s", mirrorURL.Host, "containerd/volume-ownership:2.1"), nil, nil, "")
+		_, err = criService.PullImage(dctx, &runtimeapi.PullImageRequest{
+			Image: &runtimeapi.ImageSpec{
+				Image: fmt.Sprintf("%s/%s", mirrorURL.Host, "containerd/volume-ownership:2.1"),
+			},
+		})
 
-		assert.Equal(t, context.Canceled, errors.Unwrap(err), "[%v] expected canceled error, but got (%v)", idx, err)
-		assert.True(t, mirrorSrv.limiter.clearHitCircuitBreaker(), "[%v] expected to hit circuit breaker", idx)
+		assert.Equal(t, errors.Unwrap(err), context.Canceled, "[%v] expected canceled error, but got (%v)", idx, err)
+		assert.Equal(t, mirrorSrv.limiter.clearHitCircuitBreaker(), true, "[%v] expected to hit circuit breaker", idx)
 
 		// cleanup the temp data by sync delete
 		lid, ok := leases.FromContext(dctx)
-		assert.True(t, ok)
+		assert.Equal(t, ok, true)
 		err = cli.LeasesService().Delete(ctx, leases.Lease{ID: lid}, leases.SynchronousDelete)
 		assert.NoError(t, err)
 	}
@@ -469,27 +451,25 @@ func (l *ioCopyLimiter) limitedCopy(ctx context.Context, dst io.Writer, src io.R
 	return nil
 }
 
-// initLocalCRIImageService uses containerd.Client to init CRI plugin.
+// initLocalCRIPlugin uses containerd.Client to init CRI plugin.
 //
 // NOTE: We don't need to start the CRI plugin here because we just need the
 // ImageService API.
-func initLocalCRIImageService(client *containerd.Client, tmpDir string, registryCfg criconfig.Registry) (criserver.ImageService, error) {
+func initLocalCRIPlugin(client *containerd.Client, tmpDir string, registryCfg criconfig.Registry) (criserver.CRIService, error) {
 	containerdRootDir := filepath.Join(tmpDir, "root")
+	criWorkDir := filepath.Join(tmpDir, "cri-plugin")
 
-	cfg := criconfig.ImageConfig{
-		Snapshotter:              defaults.DefaultSnapshotter,
-		Registry:                 registryCfg,
-		ImagePullProgressTimeout: defaultImagePullProgressTimeout.String(),
-		StatsCollectPeriod:       10,
-	}
-
-	return images.NewService(cfg, &images.CRIImageServiceOptions{
-		ImageFSPaths: map[string]string{
-			defaults.DefaultSnapshotter: containerdRootDir,
+	cfg := criconfig.Config{
+		PluginConfig: criconfig.PluginConfig{
+			ContainerdConfig: criconfig.ContainerdConfig{
+				Snapshotter: containerd.DefaultSnapshotter,
+			},
+			Registry:                 registryCfg,
+			ImagePullProgressTimeout: defaultImagePullProgressTimeout.String(),
 		},
-		RuntimePlatforms: map[string]images.ImagePlatform{},
-		Content:          client.ContentStore(),
-		Images:           client.ImageService(),
-		Client:           client,
-	})
+		ContainerdRootDir: containerdRootDir,
+		RootDir:           filepath.Join(criWorkDir, "root"),
+		StateDir:          filepath.Join(criWorkDir, "state"),
+	}
+	return criserver.NewCRIService(cfg, client, nil)
 }

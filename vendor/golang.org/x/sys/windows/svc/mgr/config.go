@@ -3,6 +3,7 @@
 // license that can be found in the LICENSE file.
 
 //go:build windows
+// +build windows
 
 package mgr
 
@@ -63,7 +64,7 @@ func toStringSlice(ps *uint16) []string {
 	return r
 }
 
-// Config retrieves service s configuration parameters.
+// Config retrieves service s configuration paramteres.
 func (s *Service) Config() (Config, error) {
 	var p *windows.QUERY_SERVICE_CONFIG
 	n := uint32(1024)

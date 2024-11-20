@@ -1,5 +1,16 @@
 // Copyright The OpenTelemetry Authors
-// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package resource // import "go.opentelemetry.io/otel/sdk/resource"
 
@@ -12,19 +23,21 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
 )
 
 const (
 	// resourceAttrKey is the environment variable name OpenTelemetry Resource information will be read from.
-	resourceAttrKey = "OTEL_RESOURCE_ATTRIBUTES" //nolint:gosec // False positive G101: Potential hardcoded credentials
+	resourceAttrKey = "OTEL_RESOURCE_ATTRIBUTES"
 
 	// svcNameKey is the environment variable name that Service Name information will be read from.
 	svcNameKey = "OTEL_SERVICE_NAME"
 )
 
-// errMissingValue is returned when a resource value is missing.
-var errMissingValue = fmt.Errorf("%w: missing value", ErrPartialResource)
+var (
+	// errMissingValue is returned when a resource value is missing.
+	errMissingValue = fmt.Errorf("%w: missing value", ErrPartialResource)
+)
 
 // fromEnv is a Detector that implements the Detector and collects
 // resources from environment.  This Detector is included as a
@@ -69,23 +82,23 @@ func constructOTResources(s string) (*Resource, error) {
 		return Empty(), nil
 	}
 	pairs := strings.Split(s, ",")
-	var attrs []attribute.KeyValue
+	attrs := []attribute.KeyValue{}
 	var invalid []string
 	for _, p := range pairs {
-		k, v, found := strings.Cut(p, "=")
-		if !found {
+		field := strings.SplitN(p, "=", 2)
+		if len(field) != 2 {
 			invalid = append(invalid, p)
 			continue
 		}
-		key := strings.TrimSpace(k)
-		val, err := url.PathUnescape(strings.TrimSpace(v))
+		k := strings.TrimSpace(field[0])
+		v, err := url.QueryUnescape(strings.TrimSpace(field[1]))
 		if err != nil {
 			// Retain original value if decoding fails, otherwise it will be
 			// an empty string.
-			val = v
+			v = field[1]
 			otel.Handle(err)
 		}
-		attrs = append(attrs, attribute.String(key, val))
+		attrs = append(attrs, attribute.String(k, v))
 	}
 	var err error
 	if len(invalid) > 0 {

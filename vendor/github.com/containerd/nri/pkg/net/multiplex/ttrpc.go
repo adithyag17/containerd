@@ -22,8 +22,3 @@ const (
 	// RuntimeServiceConn is the mux connection ID for NRI runtime services.
 	RuntimeServiceConn
 )
-
-const (
-	ttrpcMessageHeaderLength = 10
-	ttrpcMessageLengthMax    = 4 << 20
-)

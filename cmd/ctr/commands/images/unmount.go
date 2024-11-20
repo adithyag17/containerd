@@ -17,36 +17,35 @@
 package images
 
 import (
-	"errors"
 	"fmt"
 
-	"github.com/containerd/containerd/v2/cmd/ctr/commands"
-	"github.com/containerd/containerd/v2/core/leases"
-	"github.com/containerd/containerd/v2/core/mount"
-	"github.com/containerd/errdefs"
-	"github.com/urfave/cli/v2"
+	"github.com/containerd/containerd/cmd/ctr/commands"
+	"github.com/containerd/containerd/errdefs"
+	"github.com/containerd/containerd/leases"
+	"github.com/containerd/containerd/mount"
+	"github.com/urfave/cli"
 )
 
-var unmountCommand = &cli.Command{
+var unmountCommand = cli.Command{
 	Name:        "unmount",
 	Usage:       "Unmount the image from the target",
 	ArgsUsage:   "[flags] <target>",
 	Description: "Unmount the image rootfs from the specified target.",
 	Flags: append(append(commands.RegistryFlags, append(commands.SnapshotterFlags, commands.LabelFlag)...),
-		&cli.BoolFlag{
+		cli.BoolFlag{
 			Name:  "rm",
 			Usage: "Remove the snapshot after a successful unmount",
 		},
 	),
-	Action: func(cliContext *cli.Context) error {
+	Action: func(context *cli.Context) error {
 		var (
-			target = cliContext.Args().First()
+			target = context.Args().First()
 		)
 		if target == "" {
-			return errors.New("please provide a target path to unmount from")
+			return fmt.Errorf("please provide a target path to unmount from")
 		}
 
-		client, ctx, cancel, err := commands.NewClient(cliContext)
+		client, ctx, cancel, err := commands.NewClient(context)
 		if err != nil {
 			return err
 		}
@@ -56,8 +55,8 @@ var unmountCommand = &cli.Command{
 			return err
 		}
 
-		if cliContext.Bool("rm") {
-			snapshotter := cliContext.String("snapshotter")
+		if context.Bool("rm") {
+			snapshotter := context.String("snapshotter")
 			s := client.SnapshotService(snapshotter)
 			if err := client.LeasesService().Delete(ctx, leases.Lease{ID: target}); err != nil && !errdefs.IsNotFound(err) {
 				return fmt.Errorf("error deleting lease: %w", err)
@@ -67,7 +66,7 @@ var unmountCommand = &cli.Command{
 			}
 		}
 
-		fmt.Fprintln(cliContext.App.Writer, target)
+		fmt.Fprintln(context.App.Writer, target)
 		return nil
 	},
 }
