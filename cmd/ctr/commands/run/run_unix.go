@@ -35,9 +35,9 @@ import (
 	"github.com/containerd/containerd/contrib/seccomp"
 	"github.com/containerd/containerd/oci"
 	runtimeoptions "github.com/containerd/containerd/pkg/runtimeoptions/v1"
-	"github.com/containerd/containerd/platforms"
 	"github.com/containerd/containerd/runtime/v2/runc/options"
 	"github.com/containerd/containerd/snapshots"
+	"github.com/containerd/platforms"
 	"github.com/intel/goresctrl/pkg/blockio"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/urfave/cli"
@@ -101,6 +101,10 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 		cOpts []containerd.NewContainerOpts
 		spec  containerd.NewContainerOpts
 	)
+
+	if sandbox := context.String("sandbox"); sandbox != "" {
+		cOpts = append(cOpts, containerd.WithSandbox(sandbox))
+	}
 
 	if config {
 		cOpts = append(cOpts, containerd.WithContainerLabels(commands.LabelArgs(context.StringSlice("label"))))

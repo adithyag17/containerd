@@ -27,17 +27,18 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/containerd/log"
+	"github.com/urfave/cli"
+	"google.golang.org/grpc/grpclog"
+
 	"github.com/containerd/containerd/defaults"
 	"github.com/containerd/containerd/errdefs"
-	"github.com/containerd/containerd/log"
 	_ "github.com/containerd/containerd/metrics" // import containerd build info
 	"github.com/containerd/containerd/mount"
 	"github.com/containerd/containerd/services/server"
 	srvconfig "github.com/containerd/containerd/services/server/config"
 	"github.com/containerd/containerd/sys"
 	"github.com/containerd/containerd/version"
-	"github.com/urfave/cli"
-	"google.golang.org/grpc/grpclog"
 )
 
 const usage = `
@@ -357,7 +358,7 @@ func setLogLevel(context *cli.Context, config *srvconfig.Config) error {
 }
 
 func setLogFormat(config *srvconfig.Config) error {
-	f := config.Debug.Format
+	f := log.OutputFormat(config.Debug.Format)
 	if f == "" {
 		f = log.TextFormat
 	}

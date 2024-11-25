@@ -39,15 +39,17 @@ import (
 	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
+	"github.com/containerd/log"
+	distribution "github.com/distribution/reference"
+
 	"github.com/containerd/containerd"
+	"github.com/containerd/containerd/diff"
 	"github.com/containerd/containerd/errdefs"
 	containerdimages "github.com/containerd/containerd/images"
-	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/pkg/cri/annotations"
 	criconfig "github.com/containerd/containerd/pkg/cri/config"
 	crilabels "github.com/containerd/containerd/pkg/cri/labels"
 	snpkg "github.com/containerd/containerd/pkg/snapshotters"
-	distribution "github.com/containerd/containerd/reference/docker"
 	"github.com/containerd/containerd/remotes/docker"
 	"github.com/containerd/containerd/remotes/docker/config"
 	"github.com/containerd/containerd/tracing"
@@ -168,6 +170,7 @@ func (c *criService) PullImage(ctx context.Context, r *runtime.PullImageRequest)
 		containerd.WithImageHandler(imageHandler),
 		containerd.WithUnpackOpts([]containerd.UnpackOpt{
 			containerd.WithUnpackDuplicationSuppressor(c.unpackDuplicationSuppressor),
+			containerd.WithUnpackApplyOpts(diff.WithSyncFs(c.config.ImagePullWithSyncFs)),
 		}),
 	}
 
@@ -213,8 +216,9 @@ func (c *criService) PullImage(ctx context.Context, r *runtime.PullImageRequest)
 		}
 	}
 
+	const mbToByte = 1024 * 1024
 	size, _ := image.Size(ctx)
-	imagePullingSpeed := float64(size) / time.Since(startTime).Seconds()
+	imagePullingSpeed := float64(size) / mbToByte / time.Since(startTime).Seconds()
 	imagePullThroughput.Observe(imagePullingSpeed)
 
 	log.G(ctx).Infof("Pulled image %q with image id %q, repo tag %q, repo digest %q, size %q in %s", imageRef, imageID,
@@ -279,14 +283,28 @@ func (c *criService) createImageReference(ctx context.Context, name string, desc
 	}
 	// TODO(random-liu): Figure out which is the more performant sequence create then update or
 	// update then create.
-	oldImg, err := c.client.ImageService().Create(ctx, img)
+	_, err := c.client.ImageService().Create(ctx, img)
 	if err == nil || !errdefs.IsAlreadyExists(err) {
 		return err
 	}
-	if oldImg.Target.Digest == img.Target.Digest && oldImg.Labels[crilabels.ImageLabelKey] == labels[crilabels.ImageLabelKey] {
+	// Retrieve oldImg from image store here because Create routine returns an
+	// empty image on ErrAlreadyExists
+	oldImg, err := c.client.ImageService().Get(ctx, name)
+	if err != nil {
+		return err
+	}
+	fieldpaths := []string{"target"}
+	if oldImg.Labels[crilabels.ImageLabelKey] != labels[crilabels.ImageLabelKey] {
+		fieldpaths = append(fieldpaths, "labels."+crilabels.ImageLabelKey)
+	}
+	if oldImg.Labels[crilabels.PinnedImageLabelKey] != labels[crilabels.PinnedImageLabelKey] &&
+		labels[crilabels.PinnedImageLabelKey] == crilabels.PinnedImageLabelValue {
+		fieldpaths = append(fieldpaths, "labels."+crilabels.PinnedImageLabelKey)
+	}
+	if oldImg.Target.Digest == img.Target.Digest && len(fieldpaths) < 2 {
 		return nil
 	}
-	_, err = c.client.ImageService().Update(ctx, img, "target", "labels."+crilabels.ImageLabelKey)
+	_, err = c.client.ImageService().Update(ctx, img, fieldpaths...)
 	return err
 }
 
@@ -324,7 +342,7 @@ func (c *criService) updateImage(ctx context.Context, r string) error {
 			return fmt.Errorf("get image id: %w", err)
 		}
 		id := configDesc.Digest.String()
-		labels := c.getLabels(ctx, id)
+		labels := c.getLabels(ctx, r)
 		if err := c.createImageReference(ctx, id, img.Target(), labels); err != nil {
 			return fmt.Errorf("create image id reference %q: %w", id, err)
 		}
@@ -365,7 +383,8 @@ func (c *criService) getTLSConfig(registryTLSConfig criconfig.TLSConfig) (*tls.C
 		if len(cert.Certificate) != 0 {
 			tlsConfig.Certificates = []tls.Certificate{cert}
 		}
-		tlsConfig.BuildNameToCertificate() //nolint:staticcheck // TODO(thaJeztah): verify if we should ignore the deprecation; see https://github.com/containerd/containerd/pull/7349/files#r990644833
+		// TODO(thaJeztah): verify if we should ignore the deprecation; see https://github.com/containerd/containerd/pull/7349/files#r990644833
+		tlsConfig.BuildNameToCertificate() //nolint:staticcheck
 	}
 
 	if registryTLSConfig.CAFile != "" {
@@ -576,9 +595,6 @@ func (c *criService) encryptedImagesPullOpts() []containerd.RemoteOpt {
 }
 
 const (
-	// minPullProgressReportInternal is used to prevent the reporter from
-	// eating more CPU resources
-	minPullProgressReportInternal = 5 * time.Second
 	// defaultPullProgressReportInterval represents that how often the
 	// reporter checks that pull progress.
 	defaultPullProgressReportInterval = 10 * time.Second
@@ -626,10 +642,6 @@ func (reporter *pullProgressReporter) start(ctx context.Context) {
 		// check progress more frequently if timeout < default internal
 		if reporter.timeout < reportInterval {
 			reportInterval = reporter.timeout / 2
-
-			if reportInterval < minPullProgressReportInternal {
-				reportInterval = minPullProgressReportInternal
-			}
 		}
 
 		var ticker = time.NewTicker(reportInterval)
@@ -644,9 +656,9 @@ func (reporter *pullProgressReporter) start(ctx context.Context) {
 					WithField("activeReqs", activeReqs).
 					WithField("totalBytesRead", bytesRead).
 					WithField("lastSeenBytesRead", lastSeenBytesRead).
-					WithField("lastSeenTimestamp", lastSeenTimestamp).
+					WithField("lastSeenTimestamp", lastSeenTimestamp.Format(time.RFC3339)).
 					WithField("reportInterval", reportInterval).
-					Tracef("progress for image pull")
+					Debugf("progress for image pull")
 
 				if activeReqs == 0 || bytesRead > lastSeenBytesRead {
 					lastSeenBytesRead = bytesRead

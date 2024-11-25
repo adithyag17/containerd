@@ -34,15 +34,16 @@ import (
 	winfs "github.com/Microsoft/go-winio/pkg/fs"
 	"github.com/Microsoft/hcsshim"
 	"github.com/Microsoft/hcsshim/pkg/ociwclayer"
+	"github.com/containerd/continuity/fs"
+	"github.com/containerd/log"
+	"github.com/containerd/platforms"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
 	"github.com/containerd/containerd/errdefs"
-	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/mount"
-	"github.com/containerd/containerd/platforms"
 	"github.com/containerd/containerd/plugin"
 	"github.com/containerd/containerd/snapshots"
 	"github.com/containerd/containerd/snapshots/storage"
-	"github.com/containerd/continuity/fs"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 func init() {
@@ -280,7 +281,9 @@ func (s *snapshotter) Remove(ctx context.Context, key string) error {
 				log.G(ctx).WithError(err1).WithField("path", renamed).Error("Failed to rename after failed commit")
 			}
 		}
-		return err
+		// Return the error wrapped in ErrFailedPrecondition so that cleanup of other snapshots will
+		// still continue.
+		return errors.Join(errdefs.ErrFailedPrecondition, err)
 	}
 
 	if err = hcsshim.DestroyLayer(s.info, renamedID); err != nil {

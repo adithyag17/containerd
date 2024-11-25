@@ -19,15 +19,16 @@ package transfer
 import (
 	"fmt"
 
+	"github.com/containerd/log"
+	"github.com/containerd/platforms"
+
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/diff"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/leases"
-	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/metadata"
 	"github.com/containerd/containerd/pkg/transfer/local"
 	"github.com/containerd/containerd/pkg/unpack"
-	"github.com/containerd/containerd/platforms"
 	"github.com/containerd/containerd/plugin"
 
 	// Load packages with type registrations

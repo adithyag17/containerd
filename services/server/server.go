@@ -31,31 +31,39 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	csapi "github.com/containerd/containerd/api/services/content/v1"
-	ssapi "github.com/containerd/containerd/api/services/snapshots/v1"
-	"github.com/containerd/containerd/content/local"
-	csproxy "github.com/containerd/containerd/content/proxy"
-	"github.com/containerd/containerd/defaults"
-	"github.com/containerd/containerd/diff"
-	"github.com/containerd/containerd/events/exchange"
-	"github.com/containerd/containerd/log"
-	"github.com/containerd/containerd/pkg/dialer"
-	"github.com/containerd/containerd/pkg/timeout"
-	"github.com/containerd/containerd/plugin"
-	srvconfig "github.com/containerd/containerd/services/server/config"
-	ssproxy "github.com/containerd/containerd/snapshots/proxy"
-	"github.com/containerd/containerd/sys"
 	"github.com/containerd/ttrpc"
 	"github.com/docker/go-metrics"
 	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+
+	csapi "github.com/containerd/containerd/api/services/content/v1"
+	diffapi "github.com/containerd/containerd/api/services/diff/v1"
+	ssapi "github.com/containerd/containerd/api/services/snapshots/v1"
+	"github.com/containerd/containerd/content/local"
+	csproxy "github.com/containerd/containerd/content/proxy"
+	"github.com/containerd/containerd/defaults"
+	"github.com/containerd/containerd/diff"
+	diffproxy "github.com/containerd/containerd/diff/proxy"
+	"github.com/containerd/containerd/events/exchange"
+	"github.com/containerd/containerd/pkg/deprecation"
+	"github.com/containerd/containerd/pkg/dialer"
+	"github.com/containerd/containerd/pkg/timeout"
+	"github.com/containerd/containerd/plugin"
+	srvconfig "github.com/containerd/containerd/services/server/config"
+	"github.com/containerd/containerd/services/warning"
+	ssproxy "github.com/containerd/containerd/snapshots/proxy"
+	"github.com/containerd/containerd/sys"
+	"github.com/containerd/log"
+	"github.com/containerd/platforms"
 )
 
 // CreateTopLevelDirectories creates the top-level root and state directories.
@@ -75,6 +83,15 @@ func CreateTopLevelDirectories(config *srvconfig.Config) error {
 
 	if err := sys.MkdirAllWithACL(config.State, 0711); err != nil {
 		return err
+	}
+	if config.State != defaults.DefaultStateDir {
+		// XXX: socketRoot in pkg/shim is hard-coded to the default state directory.
+		// See https://github.com/containerd/containerd/issues/10502#issuecomment-2249268582 for why it's set up that way.
+		// The default fifo directory in pkg/cio is also configured separately and defaults to the default state directory instead of the configured state directory.
+		// Make sure the default state directory is created with the correct permissions.
+		if err := sys.MkdirAllWithACL(defaults.DefaultStateDir, 0o711); err != nil {
+			return err
+		}
 	}
 
 	if config.TempDir != "" {
@@ -118,13 +135,12 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 	}
 
 	serverOpts := []grpc.ServerOption{
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
-			otelgrpc.StreamServerInterceptor(),
 			grpc_prometheus.StreamServerInterceptor,
 			streamNamespaceInterceptor,
 		)),
 		grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
-			otelgrpc.UnaryServerInterceptor(),
 			grpc_prometheus.UnaryServerInterceptor,
 			unaryNamespaceInterceptor,
 		)),
@@ -207,6 +223,7 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 			reqID = p.ID
 		}
 		log.G(ctx).WithField("type", p.Type).Infof("loading plugin %q...", id)
+		var mustSucceed int32
 
 		initContext := plugin.NewContext(
 			ctx,
@@ -218,7 +235,10 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 		initContext.Events = events
 		initContext.Address = config.GRPC.Address
 		initContext.TTRPCAddress = config.TTRPC.Address
-		initContext.RegisterReadiness = s.RegisterReadiness
+		initContext.RegisterReadiness = func() func() {
+			atomic.StoreInt32(&mustSucceed, 1)
+			return s.RegisterReadiness()
+		}
 
 		// load the plugin specific configuration if it is provided
 		if p.Config != nil {
@@ -242,6 +262,10 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 			}
 			if _, ok := required[reqID]; ok {
 				return nil, fmt.Errorf("load required plugin %s: %w", id, err)
+			}
+			// If readiness was registered during initialization, the plugin cannot fail
+			if atomic.LoadInt32(&mustSucceed) != 0 {
+				return nil, fmt.Errorf("plugin failed after registering readiness %s: %w", id, err)
 			}
 			continue
 		}
@@ -284,7 +308,33 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 			return nil, err
 		}
 	}
+
+	recordConfigDeprecations(ctx, config, initialized)
 	return s, nil
+}
+
+// recordConfigDeprecations attempts to record use of any deprecated config field.  Failures are logged and ignored.
+func recordConfigDeprecations(ctx context.Context, config *srvconfig.Config, set *plugin.Set) {
+	// record any detected deprecations without blocking server startup
+	plugin, err := set.GetByID(plugin.WarningPlugin, plugin.DeprecationsPlugin)
+	if err != nil {
+		log.G(ctx).WithError(err).Warn("failed to load warning service to record deprecations")
+		return
+	}
+	instance, err := plugin.Instance()
+	if err != nil {
+		log.G(ctx).WithError(err).Warn("failed to load warning service to record deprecations")
+		return
+	}
+	warn, ok := instance.(warning.Service)
+	if !ok {
+		log.G(ctx).WithError(err).Warn("failed to load warning service to record deprecations, unexpected plugin type")
+		return
+	}
+
+	if config.PluginDir != "" {
+		warn.Emit(ctx, deprecation.GoPluginLibrary)
+	}
 }
 
 // Server is the containerd main daemon
@@ -391,8 +441,11 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 	if path == "" {
 		path = filepath.Join(config.Root, "plugins")
 	}
-	if err := plugin.Load(path); err != nil {
+	if count, err := plugin.Load(path); err != nil {
 		return nil, err
+	} else if count > 0 || config.PluginDir != "" {
+		config.PluginDir = path
+		log.G(ctx).Warningf("loaded %d dynamic plugins. `go_plugin` is deprecated, please use `external plugins` instead", count)
 	}
 	// load additional plugins that don't automatically register themselves
 	plugin.Register(&plugin.Registration{
@@ -411,6 +464,8 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 			f func(*grpc.ClientConn) interface{}
 
 			address = pp.Address
+			p       v1.Platform
+			err     error
 		)
 
 		switch pp.Type {
@@ -426,15 +481,36 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 			f = func(conn *grpc.ClientConn) interface{} {
 				return csproxy.NewContentStore(csapi.NewContentClient(conn))
 			}
+		case string(plugin.DiffPlugin), "diff":
+			t = plugin.DiffPlugin
+			f = func(conn *grpc.ClientConn) interface{} {
+				return diffproxy.NewDiffApplier(diffapi.NewDiffClient(conn))
+			}
 		default:
 			log.G(ctx).WithField("type", pp.Type).Warn("unknown proxy plugin type")
 		}
+		if pp.Platform != "" {
+			p, err = platforms.Parse(pp.Platform)
+			if err != nil {
+				log.G(ctx).WithError(err).WithField("plugin", name).Warn("skipping proxy platform with bad platform")
+			}
+		} else {
+			p = platforms.DefaultSpec()
+		}
+
+		exports := pp.Exports
+		if exports == nil {
+			exports = map[string]string{}
+		}
+		exports["address"] = address
 
 		plugin.Register(&plugin.Registration{
 			Type: t,
 			ID:   name,
 			InitFn: func(ic *plugin.InitContext) (interface{}, error) {
-				ic.Meta.Exports["address"] = address
+				ic.Meta.Exports = exports
+				ic.Meta.Platforms = append(ic.Meta.Platforms, p)
+				ic.Meta.Capabilities = pp.Capabilities
 				conn, err := clients.getClient(address)
 				if err != nil {
 					return nil, err

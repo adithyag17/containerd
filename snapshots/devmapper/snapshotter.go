@@ -23,18 +23,19 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/containerd/log"
+	"github.com/hashicorp/go-multierror"
+
 	"github.com/containerd/containerd/errdefs"
-	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/mount"
 	"github.com/containerd/containerd/snapshots"
 	"github.com/containerd/containerd/snapshots/devmapper/dmsetup"
 	"github.com/containerd/containerd/snapshots/storage"
-	"github.com/hashicorp/go-multierror"
-	exec "golang.org/x/sys/execabs"
 )
 
 type fsType string

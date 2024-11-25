@@ -26,13 +26,15 @@ import (
 	wstats "github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/stats"
 	cg1 "github.com/containerd/cgroups/v3/cgroup1/stats"
 	cg2 "github.com/containerd/cgroups/v3/cgroup2/stats"
+	"github.com/containerd/log"
+	"github.com/containerd/typeurl/v2"
+	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
+
 	"github.com/containerd/containerd/api/services/tasks/v1"
 	"github.com/containerd/containerd/api/types"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/pkg/cri/store/stats"
 	"github.com/containerd/containerd/protobuf"
-	"github.com/containerd/typeurl/v2"
-	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
 	containerstore "github.com/containerd/containerd/pkg/cri/store/container"
 )
@@ -115,6 +117,14 @@ func (c *criService) toCRIContainerStats(
 		if !ok {
 			handler, err = c.getMetricsHandler(ctx, cntr.SandboxID)
 			if err != nil {
+				// If the sandbox is not found, it may have been removed. we need to check container whether it is still exist
+				if errdefs.IsNotFound(err) {
+					_, err = c.containerStore.Get(cntr.ID)
+					if err != nil && errdefs.IsNotFound(err) {
+						log.G(ctx).Warnf("container %q is not found, skip it", cntr.ID)
+						continue
+					}
+				}
 				return nil, fmt.Errorf("failed to get metrics handler for container %q: %w", cntr.ID, err)
 			}
 			sandboxToMetricsHandler[cntr.SandboxID] = handler
@@ -180,6 +190,11 @@ func (c *criService) getUsageNanoCores(containerID string, isSandbox bool, curre
 
 	// zero or negative interval
 	if nanoSeconds <= 0 {
+		return 0, nil
+	}
+
+	// can't go backwards, this value might come in as 0 if the container was just removed
+	if currentUsageCoreNanoSeconds < oldStats.UsageCoreNanoSeconds {
 		return 0, nil
 	}
 

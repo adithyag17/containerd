@@ -21,25 +21,27 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/containers"
-	"github.com/containerd/containerd/errdefs"
-	"github.com/containerd/containerd/log"
-	"github.com/containerd/containerd/pkg/blockio"
-	"github.com/containerd/containerd/pkg/cri/annotations"
-	"github.com/containerd/containerd/pkg/cri/constants"
-	cstore "github.com/containerd/containerd/pkg/cri/store/container"
-	sstore "github.com/containerd/containerd/pkg/cri/store/sandbox"
-	ctrdutil "github.com/containerd/containerd/pkg/cri/util"
+	"github.com/containerd/log"
 	"github.com/containerd/typeurl/v2"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/opencontainers/runtime-tools/generate"
 	cri "k8s.io/cri-api/pkg/apis/runtime/v1"
 
-	"github.com/containerd/containerd/pkg/nri"
+	"github.com/containerd/containerd"
+	"github.com/containerd/containerd/containers"
+	"github.com/containerd/containerd/errdefs"
+	"github.com/containerd/containerd/pkg/blockio"
+	"github.com/containerd/containerd/pkg/cri/annotations"
+	"github.com/containerd/containerd/pkg/cri/constants"
+	cstore "github.com/containerd/containerd/pkg/cri/store/container"
+	sstore "github.com/containerd/containerd/pkg/cri/store/sandbox"
+	ctrdutil "github.com/containerd/containerd/pkg/cri/util"
+
 	"github.com/containerd/nri/pkg/api"
 	nrigen "github.com/containerd/nri/pkg/runtime-tools/generate"
+
+	"github.com/containerd/containerd/pkg/nri"
 )
 
 type API struct {
@@ -47,9 +49,10 @@ type API struct {
 	nri nri.API
 }
 
-func NewAPI(nri nri.API) *API {
+func NewAPI(nri nri.API, cri CRIImplementation) *API {
 	return &API{
 		nri: nri,
+		cri: cri,
 	}
 }
 
@@ -59,12 +62,11 @@ func (a *API) IsDisabled() bool {
 
 func (a *API) IsEnabled() bool { return !a.IsDisabled() }
 
-func (a *API) Register(cri CRIImplementation) error {
+func (a *API) Register() error {
 	if a.IsDisabled() {
 		return nil
 	}
 
-	a.cri = cri
 	nri.RegisterDomain(a)
 
 	return a.nri.Start()

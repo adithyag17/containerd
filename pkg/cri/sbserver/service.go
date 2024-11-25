@@ -33,8 +33,10 @@ import (
 	"github.com/containerd/containerd/pkg/cri/sbserver/podsandbox"
 	"github.com/containerd/containerd/pkg/cri/streaming"
 	"github.com/containerd/containerd/pkg/kmutex"
+	nriservice "github.com/containerd/containerd/pkg/nri"
 	"github.com/containerd/containerd/plugin"
 	"github.com/containerd/containerd/sandbox"
+	"github.com/containerd/containerd/services/warning"
 	runtime_alpha "github.com/containerd/containerd/third_party/k8s.io/cri-api/pkg/apis/runtime/v1alpha2"
 	"github.com/containerd/go-cni"
 	"github.com/sirupsen/logrus"
@@ -122,10 +124,12 @@ type criService struct {
 	containerEventsChan chan runtime.ContainerEventResponse
 	// nri is used to hook NRI into CRI request processing.
 	nri *nri.API
+	// warn is used to emit warnings for cri-api v1alpha2 usage.
+	warn warning.Service
 }
 
 // NewCRIService returns a new instance of CRIService
-func NewCRIService(config criconfig.Config, client *containerd.Client, nri *nri.API) (CRIService, error) {
+func NewCRIService(config criconfig.Config, client *containerd.Client, nriservice nriservice.API, warn warning.Service) (CRIService, error) {
 	var err error
 	labels := label.NewStore()
 	c := &criService{
@@ -142,6 +146,7 @@ func NewCRIService(config criconfig.Config, client *containerd.Client, nri *nri.
 		netPlugin:                   make(map[string]cni.CNI),
 		unpackDuplicationSuppressor: kmutex.New(),
 		sandboxControllers:          make(map[criconfig.SandboxControllerMode]sandbox.Controller),
+		warn:                        warn,
 	}
 
 	// TODO: figure out a proper channel size.
@@ -193,7 +198,7 @@ func NewCRIService(config criconfig.Config, client *containerd.Client, nri *nri.
 	c.sandboxControllers[criconfig.ModePodSandbox] = podsandbox.New(config, client, c.sandboxStore, c.os, c, c.baseOCISpecs)
 	c.sandboxControllers[criconfig.ModeShim] = client.SandboxController()
 
-	c.nri = nri
+	c.nri = nri.NewAPI(nriservice, &criImplementation{c})
 
 	return c, nil
 }
@@ -277,7 +282,7 @@ func (c *criService) Run(ready func()) error {
 	}()
 
 	// register CRI domain with NRI
-	if err := c.nri.Register(&criImplementation{c}); err != nil {
+	if err := c.nri.Register(); err != nil {
 		return fmt.Errorf("failed to set up NRI for CRI service: %w", err)
 	}
 
@@ -343,7 +348,7 @@ func (c *criService) register(s *grpc.Server) error {
 	runtime.RegisterRuntimeServiceServer(s, instrumented)
 	runtime.RegisterImageServiceServer(s, instrumented)
 
-	instrumentedAlpha := instrument.NewAlphaService(c)
+	instrumentedAlpha := instrument.NewAlphaService(c, c.warn)
 	runtime_alpha.RegisterRuntimeServiceServer(s, instrumentedAlpha)
 	runtime_alpha.RegisterImageServiceServer(s, instrumentedAlpha)
 

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/containerd/platforms"
 	"github.com/containerd/typeurl/v2"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
@@ -32,7 +33,6 @@ import (
 	"github.com/containerd/containerd/pkg/streaming"
 	"github.com/containerd/containerd/pkg/transfer"
 	"github.com/containerd/containerd/pkg/transfer/plugins"
-	"github.com/containerd/containerd/platforms"
 	"github.com/containerd/containerd/remotes"
 )
 

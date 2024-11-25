@@ -17,7 +17,9 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,7 +34,9 @@ import (
 	"github.com/containerd/containerd/pkg/cri/nri"
 	"github.com/containerd/containerd/pkg/cri/streaming"
 	"github.com/containerd/containerd/pkg/kmutex"
+	nriservice "github.com/containerd/containerd/pkg/nri"
 	"github.com/containerd/containerd/plugin"
+	"github.com/containerd/containerd/services/warning"
 	runtime_alpha "github.com/containerd/containerd/third_party/k8s.io/cri-api/pkg/apis/runtime/v1alpha2"
 	cni "github.com/containerd/go-cni"
 	"github.com/sirupsen/logrus"
@@ -117,12 +121,19 @@ type criService struct {
 	// containerEventsChan is used to capture container events and send them
 	// to the caller of GetContainerEvents.
 	containerEventsChan chan runtime.ContainerEventResponse
+	// warn is used to emit warnings for cri-api v1alpha2 usage.
+	warn warning.Service
 }
 
 // NewCRIService returns a new instance of CRIService
-func NewCRIService(config criconfig.Config, client *containerd.Client, nri *nri.API) (CRIService, error) {
+func NewCRIService(config criconfig.Config, client *containerd.Client, nriservice nriservice.API, warn warning.Service) (CRIService, error) {
 	var err error
 	labels := label.NewStore()
+
+	if client.SnapshotService(config.ContainerdConfig.Snapshotter) == nil {
+		return nil, fmt.Errorf("failed to find snapshotter %q", config.ContainerdConfig.Snapshotter)
+	}
+
 	c := &criService{
 		config:                      config,
 		client:                      client,
@@ -136,6 +147,7 @@ func NewCRIService(config criconfig.Config, client *containerd.Client, nri *nri.
 		initialized:                 atomic.NewBool(false),
 		netPlugin:                   make(map[string]cni.CNI),
 		unpackDuplicationSuppressor: kmutex.New(),
+		warn:                        warn,
 	}
 
 	// TODO: figure out a proper channel size.
@@ -145,7 +157,11 @@ func NewCRIService(config criconfig.Config, client *containerd.Client, nri *nri.
 		return nil, fmt.Errorf("failed to find snapshotter %q", c.config.ContainerdConfig.Snapshotter)
 	}
 
-	c.imageFSPath = imageFSPath(config.ContainerdRootDir, config.ContainerdConfig.Snapshotter)
+	c.imageFSPath = imageFSPath(
+		config.ContainerdRootDir,
+		config.ContainerdConfig.Snapshotter,
+		client,
+	)
 	logrus.Infof("Get image filesystem path %q", c.imageFSPath)
 
 	if err := c.initPlatform(); err != nil {
@@ -183,7 +199,7 @@ func NewCRIService(config criconfig.Config, client *containerd.Client, nri *nri.
 		return nil, err
 	}
 
-	c.nri = nri
+	c.nri = nri.NewAPI(nriservice, &criImplementation{c})
 
 	return c, nil
 }
@@ -261,7 +277,7 @@ func (c *criService) Run(ready func()) error {
 	}()
 
 	// register CRI domain with NRI
-	if err := c.nri.Register(&criImplementation{c}); err != nil {
+	if err := c.nri.Register(); err != nil {
 		return fmt.Errorf("failed to set up NRI for CRI service: %w", err)
 	}
 
@@ -328,7 +344,7 @@ func (c *criService) register(s *grpc.Server) error {
 	runtime.RegisterRuntimeServiceServer(s, instrumented)
 	runtime.RegisterImageServiceServer(s, instrumented)
 
-	instrumentedAlpha := instrument.NewAlphaService(c)
+	instrumentedAlpha := instrument.NewAlphaService(c, c.warn)
 	runtime_alpha.RegisterRuntimeServiceServer(s, instrumentedAlpha)
 	runtime_alpha.RegisterImageServiceServer(s, instrumentedAlpha)
 
@@ -337,8 +353,40 @@ func (c *criService) register(s *grpc.Server) error {
 
 // imageFSPath returns containerd image filesystem path.
 // Note that if containerd changes directory layout, we also needs to change this.
-func imageFSPath(rootDir, snapshotter string) string {
-	return filepath.Join(rootDir, fmt.Sprintf("%s.%s", plugin.SnapshotPlugin, snapshotter))
+func imageFSPath(rootDir, snapshotter string, client *containerd.Client) string {
+	introspection := func() (string, error) {
+		filters := []string{fmt.Sprintf("type==%s, id==%s", plugin.SnapshotPlugin, snapshotter)}
+		in := client.IntrospectionService()
+
+		resp, err := in.Plugins(context.Background(), filters)
+		if err != nil {
+			return "", err
+		}
+
+		if len(resp.Plugins) <= 0 {
+			return "", fmt.Errorf("inspection service could not find snapshotter %s plugin", snapshotter)
+		}
+
+		sn := resp.Plugins[0]
+		if root, ok := sn.Exports[plugin.SnapshotterRootDir]; ok {
+			return root, nil
+		}
+		return "", errors.New("snapshotter does not export root path")
+	}
+
+	var imageFSPath string
+	path, err := introspection()
+	if err != nil {
+		logrus.WithError(err).WithField("snapshotter", snapshotter).Warn("snapshotter doesn't export root path")
+		imageFSPath = filepath.Join(
+			rootDir,
+			plugin.SnapshotPlugin.String()+"."+snapshotter,
+		)
+	} else {
+		imageFSPath = path
+	}
+
+	return imageFSPath
 }
 
 func loadOCISpec(filename string) (*oci.Spec, error) {

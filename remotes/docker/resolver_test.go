@@ -24,8 +24,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -33,6 +35,7 @@ import (
 
 	"github.com/containerd/containerd/remotes"
 	"github.com/containerd/containerd/remotes/docker/auth"
+	remoteerrors "github.com/containerd/containerd/remotes/errors"
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -213,6 +216,14 @@ func TestPostBasicAuthTokenResolver(t *testing.T) {
 	runBasicTest(t, "testname", withTokenServer(th, creds))
 }
 
+func TestBasicAuthResolver(t *testing.T) {
+	creds := func(string) (string, string, error) {
+		return "totallyvaliduser", "totallyvalidpassword", nil
+	}
+
+	runBasicTest(t, "testname", withBasicAuthServer(creds))
+}
+
 func TestBadTokenResolver(t *testing.T) {
 	th := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -234,7 +245,7 @@ func TestBadTokenResolver(t *testing.T) {
 	defer close()
 
 	resolver := NewResolver(ro)
-	image := fmt.Sprintf("%s/doesntmatter:sometatg", base)
+	image := fmt.Sprintf("%s/doesntmatter:sometag", base)
 
 	_, _, err := resolver.Resolve(ctx, image)
 	if err == nil {
@@ -242,6 +253,59 @@ func TestBadTokenResolver(t *testing.T) {
 	}
 	if !errors.Is(err, ErrInvalidAuthorization) {
 		t.Fatal(err)
+	}
+}
+
+func TestMissingBasicAuthResolver(t *testing.T) {
+	creds := func(string) (string, string, error) {
+		return "", "", nil
+	}
+
+	ctx := context.Background()
+	h := newContent(ocispec.MediaTypeImageManifest, []byte("not anything parse-able"))
+
+	base, ro, close := withBasicAuthServer(creds)(logHandler{t, h})
+	defer close()
+
+	resolver := NewResolver(ro)
+	image := fmt.Sprintf("%s/doesntmatter:sometag", base)
+
+	_, _, err := resolver.Resolve(ctx, image)
+	if err == nil {
+		t.Fatal("Expected error getting token with inssufficient scope")
+	}
+	if !errors.Is(err, ErrInvalidAuthorization) {
+		t.Fatal(err)
+	}
+	if !strings.Contains(err.Error(), "no basic auth credentials") {
+		t.Fatalf("expected \"no basic auth credentials\" message, got %s", err.Error())
+	}
+}
+
+func TestWrongBasicAuthResolver(t *testing.T) {
+	creds := func(string) (string, string, error) {
+		return "totallyvaliduser", "definitelythewrongpassword", nil
+	}
+
+	ctx := context.Background()
+	h := newContent(ocispec.MediaTypeImageManifest, []byte("not anything parse-able"))
+
+	base, ro, close := withBasicAuthServer(creds)(logHandler{t, h})
+	defer close()
+
+	resolver := NewResolver(ro)
+	image := fmt.Sprintf("%s/doesntmatter:sometag", base)
+
+	_, _, err := resolver.Resolve(ctx, image)
+	if err == nil {
+		t.Fatal("Expected error getting token with inssufficient scope")
+	}
+	var rerr remoteerrors.ErrUnexpectedStatus
+	if !errors.As(err, &rerr) {
+		t.Fatal(err)
+	}
+	if rerr.StatusCode != 403 {
+		t.Fatalf("expected 403 status code, got %d", rerr.StatusCode)
 	}
 }
 
@@ -327,6 +391,89 @@ func TestHostTLSFailureFallbackResolver(t *testing.T) {
 			server.Close()
 			tlsServer.Close()
 		}
+	}
+
+	runBasicTest(t, "testname", sf)
+}
+
+func TestHTTPFallbackResolver(t *testing.T) {
+	sf := func(h http.Handler) (string, ResolverOptions, func()) {
+		s := httptest.NewServer(h)
+		u, err := url.Parse(s.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		client := &http.Client{
+			Transport: NewHTTPFallback(http.DefaultTransport),
+		}
+		options := ResolverOptions{
+			Hosts: func(host string) ([]RegistryHost, error) {
+				return []RegistryHost{
+					{
+						Client:       client,
+						Host:         u.Host,
+						Scheme:       "https",
+						Path:         "/v2",
+						Capabilities: HostCapabilityPull | HostCapabilityResolve | HostCapabilityPush,
+					},
+				}, nil
+			},
+		}
+		return u.Host, options, s.Close
+	}
+
+	runBasicTest(t, "testname", sf)
+}
+
+func TestHTTPFallbackTimeoutResolver(t *testing.T) {
+	sf := func(h http.Handler) (string, ResolverOptions, func()) {
+
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		server := &http.Server{
+			Handler:           h,
+			ReadHeaderTimeout: time.Second,
+		}
+		go func() {
+			// Accept first connection but do not do anything with it
+			// to force TLS handshake to timeout. Subsequent connection
+			// will be HTTP and should work.
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				time.Sleep(time.Second)
+				c.Close()
+			}()
+			server.Serve(l)
+		}()
+		host := l.Addr().String()
+
+		defaultTransport := &http.Transport{
+			TLSHandshakeTimeout: time.Millisecond,
+		}
+		client := &http.Client{
+			Transport: NewHTTPFallback(defaultTransport),
+		}
+
+		options := ResolverOptions{
+			Hosts: func(host string) ([]RegistryHost, error) {
+				return []RegistryHost{
+					{
+						Client:       client,
+						Host:         host,
+						Scheme:       "https",
+						Path:         "/v2",
+						Capabilities: HostCapabilityPull | HostCapabilityResolve | HostCapabilityPush,
+					},
+				}, nil
+			},
+		}
+		return host, options, func() { l.Close() }
 	}
 
 	runBasicTest(t, "testname", sf)
@@ -516,6 +663,37 @@ func withTokenServer(th http.Handler, creds func(string) (string, string, error)
 	}
 }
 
+func withBasicAuthServer(creds func(string) (string, string, error)) func(h http.Handler) (string, ResolverOptions, func()) {
+	return func(h http.Handler) (string, ResolverOptions, func()) {
+		// Wrap with basic auth
+		wrapped := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+			user, password, ok := r.BasicAuth()
+			if ok {
+				if user != "totallyvaliduser" || password != "totallyvalidpassword" {
+					rw.WriteHeader(http.StatusForbidden)
+					rw.Write([]byte(`{"errors":[{"code":"DENIED"}]}`))
+					return
+				}
+			} else {
+				authHeader := "Basic realm=\"testserver\""
+				rw.Header().Set("WWW-Authenticate", authHeader)
+				rw.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			h.ServeHTTP(rw, r)
+		})
+
+		base, options, close := tlsServer(wrapped)
+		options.Hosts = ConfigureDefaultRegistries(
+			WithClient(options.Client),
+			WithAuthorizer(NewDockerAuthorizer(
+				WithAuthCreds(creds),
+			)),
+		)
+		return base, options, close
+	}
+}
+
 func tlsServer(h http.Handler) (string, ResolverOptions, func()) {
 	s := httptest.NewUnstartedServer(h)
 	s.StartTLS()
@@ -531,6 +709,7 @@ func tlsServer(h http.Handler) (string, ResolverOptions, func()) {
 			},
 		},
 	}
+
 	options := ResolverOptions{
 		Hosts: ConfigureDefaultRegistries(WithClient(client)),
 		// Set deprecated field for tests to use for configuration

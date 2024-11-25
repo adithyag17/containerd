@@ -22,8 +22,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/containerd/log"
+
 	"github.com/containerd/containerd/errdefs"
-	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/mount"
 	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/containerd/pkg/cleanup"

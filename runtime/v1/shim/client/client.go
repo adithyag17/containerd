@@ -25,6 +25,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -33,14 +34,13 @@ import (
 	"time"
 
 	"github.com/containerd/containerd/events"
-	"github.com/containerd/containerd/log"
 	ptypes "github.com/containerd/containerd/protobuf/types"
 	v1 "github.com/containerd/containerd/runtime/v1"
 	"github.com/containerd/containerd/runtime/v1/shim"
 	shimapi "github.com/containerd/containerd/runtime/v1/shim/v1"
 	"github.com/containerd/containerd/sys"
+	"github.com/containerd/log"
 	"github.com/containerd/ttrpc"
-	exec "golang.org/x/sys/execabs"
 	"golang.org/x/sys/unix"
 )
 

@@ -25,19 +25,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/containerd/containerd/containers"
-	"github.com/containerd/containerd/errdefs"
-	"github.com/containerd/containerd/filters"
-	"github.com/containerd/containerd/log/logtest"
-	"github.com/containerd/containerd/namespaces"
-	"github.com/containerd/containerd/protobuf"
-	"github.com/containerd/containerd/protobuf/types"
+	"github.com/containerd/log/logtest"
 	"github.com/containerd/typeurl/v2"
 	"github.com/google/go-cmp/cmp"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	bolt "go.etcd.io/bbolt"
+
+	"github.com/containerd/containerd/containers"
+	"github.com/containerd/containerd/errdefs"
+	"github.com/containerd/containerd/filters"
+	"github.com/containerd/containerd/namespaces"
+	"github.com/containerd/containerd/protobuf"
+	"github.com/containerd/containerd/protobuf/types"
 )
 
 func init() {
@@ -619,6 +620,7 @@ func TestContainersCreateUpdateDelete(t *testing.T) {
 			},
 		},
 	} {
+		testcase := testcase
 		t.Run(testcase.name, func(t *testing.T) {
 			testcase.original.ID = testcase.name
 			if testcase.input.ID == "" {

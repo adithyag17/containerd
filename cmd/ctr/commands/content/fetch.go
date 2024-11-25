@@ -26,18 +26,19 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/containerd/log"
+	"github.com/containerd/platforms"
+	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/urfave/cli"
+
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/cmd/ctr/commands"
 	"github.com/containerd/containerd/content"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/images"
-	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/pkg/progress"
-	"github.com/containerd/containerd/platforms"
 	"github.com/containerd/containerd/remotes"
-	"github.com/opencontainers/go-digest"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/urfave/cli"
 )
 
 var fetchCommand = cli.Command{
@@ -132,7 +133,7 @@ func NewFetchConfig(ctx context.Context, clicontext *cli.Context) (*FetchConfig,
 	if !clicontext.Bool("all-platforms") {
 		p := clicontext.StringSlice("platform")
 		if len(p) == 0 {
-			p = append(p, platforms.DefaultString())
+			p = append(p, platforms.Format(platforms.DefaultSpec())) // For 1.7 continue using the old format without os-version included.
 		}
 		config.Platforms = p
 	}

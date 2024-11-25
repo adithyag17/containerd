@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	goruntime "runtime"
 	"time"
 
 	"github.com/containerd/typeurl/v2"
@@ -32,13 +33,13 @@ import (
 
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/containers"
-	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/oci"
 	criconfig "github.com/containerd/containerd/pkg/cri/config"
 	cio "github.com/containerd/containerd/pkg/cri/io"
 	customopts "github.com/containerd/containerd/pkg/cri/opts"
 	containerstore "github.com/containerd/containerd/pkg/cri/store/container"
 	"github.com/containerd/containerd/pkg/cri/util"
+	"github.com/containerd/log"
 )
 
 func init() {
@@ -325,6 +326,11 @@ func (c *criService) volumeMounts(containerRootDir string, criMounts []*runtime.
 		}
 		volumeID := util.GenerateID()
 		src := filepath.Join(containerRootDir, "volumes", volumeID)
+		if !filepath.IsAbs(dst) && goruntime.GOOS != "windows" {
+			oldDst := dst
+			dst = filepath.Join("/", dst)
+			log.L.Debugf("Volume destination %q is not absolute, converted to %q", oldDst, dst)
+		}
 		// addOCIBindMounts will create these volumes.
 		mounts = append(mounts, &runtime.Mount{
 			ContainerPath:  dst,

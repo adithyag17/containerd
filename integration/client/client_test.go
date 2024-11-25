@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -30,7 +31,9 @@ import (
 	"github.com/opencontainers/image-spec/identity"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
-	exec "golang.org/x/sys/execabs"
+
+	"github.com/containerd/log"
+	"github.com/containerd/platforms"
 
 	. "github.com/containerd/containerd"
 	"github.com/containerd/containerd/defaults"
@@ -38,10 +41,8 @@ import (
 	"github.com/containerd/containerd/images"
 	imagelist "github.com/containerd/containerd/integration/images"
 	"github.com/containerd/containerd/leases"
-	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/containerd/pkg/testutil"
-	"github.com/containerd/containerd/platforms"
 )
 
 var (
