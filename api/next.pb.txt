@@ -6455,8 +6455,22 @@ file {
       json_name: "parentCheckpoint"
     }
     field {
-      name: "options"
+      name: "parent_dir"
       number: 3
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "parentDir"
+    }
+    field {
+      name: "pre_dump"
+      number: 4
+      label: LABEL_OPTIONAL
+      type: TYPE_BOOL
+      json_name: "preDump"
+    }
+    field {
+      name: "options"
+      number: 5
       label: LABEL_OPTIONAL
       type: TYPE_MESSAGE
       type_name: ".google.protobuf.Any"

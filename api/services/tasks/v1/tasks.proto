@@ -195,7 +195,9 @@ message ListPidsResponse {
 message CheckpointTaskRequest {
 	string container_id = 1;
 	string parent_checkpoint = 2;
-	google.protobuf.Any options = 3;
+	string parent_dir = 3;
+	bool pre_dump = 4;
+	google.protobuf.Any options = 5;
 }
 
 message CheckpointTaskResponse {

@@ -29,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/containerd/log"
 	"github.com/containerd/console"
 	"github.com/containerd/containerd/mount"
 	"github.com/containerd/containerd/pkg/stdio"
@@ -432,6 +433,7 @@ func (p *Init) checkpoint(ctx context.Context, r *CheckpointConfig) error {
 		work = filepath.Join(p.WorkDir, "criu-work")
 		defer os.RemoveAll(work)
 	}
+	log.G(ctx).Debugf("Checkpoint")
 	if err := p.runtime.Checkpoint(ctx, p.id, &runc.CheckpointOpts{
 		WorkDir:                  work,
 		ImagePath:                r.Path,
